@@ -124,7 +124,7 @@ class VieedEditor(App):
         height: 6;
         display: none;
         background: #222222;
-        border: single #00ffaf;
+        border: solid #00ffaf;
     }
 
     #completion_popup.visible {
@@ -146,7 +146,7 @@ class VieedEditor(App):
 
     .chat_box {
         height: 1fr;
-        border: single #333333;
+        border: solid #333333;
         padding: 1;
         margin: 1 0;
         overflow-y: scroll;
@@ -154,7 +154,6 @@ class VieedEditor(App):
 
     #chat_hint {
         color: #666666;
-        font-size: 11;
     }
     """
 
