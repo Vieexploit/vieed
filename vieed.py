@@ -15,40 +15,13 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import TextArea, Input, Static, Label, OptionList, Header, Footer
+from textual.widgets import TextArea, Input, Static, Label, OptionList
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
 OLLAMA_URL = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
 DEFAULT_MODEL = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
-MAX_CONTEXT_CHARS = 8000  # cap on file context sent to the AI
-
-THEMES = {
-    "carbon": {
-        "name": "Carbon",
-        "bg": "#121212",
-        "editor_bg": "#181818",
-        "header_bg": "#222222",
-        "border": "#333333",
-        "accent": "#00ffaf",
-    },
-    "oled": {
-        "name": "Pure OLED Monochrome",
-        "bg": "#000000",
-        "editor_bg": "#000000",
-        "header_bg": "#111111",
-        "border": "#222222",
-        "accent": "#ffffff",
-    },
-    "slate": {
-        "name": "Slate Gray",
-        "bg": "#1a1c23",
-        "editor_bg": "#212431",
-        "header_bg": "#2d3142",
-        "border": "#4f5d75",
-        "accent": "#ffffff",
-    },
-}
+MAX_CONTEXT_CHARS = 8000
 
 
 class ChatSidebar(Container):
@@ -105,7 +78,6 @@ class VieedEditor(App):
         padding: 0 1;
     }
 
-    /* Panels below are docked so they overlay instead of shifting the editor */
     #search_bar {
         dock: bottom;
         height: 3;
@@ -167,11 +139,17 @@ class VieedEditor(App):
         Binding("escape", "dismiss_panels", "Dismiss", show=False),
     ]
 
+    THEMES = {
+        "carbon": {"name": "Carbon", "bg": "#121212", "editor_bg": "#181818", "header_bg": "#222222", "border": "#333333", "accent": "#00ffaf"},
+        "oled": {"name": "Pure OLED Monochrome", "bg": "#000000", "editor_bg": "#000000", "header_bg": "#111111", "border": "#222222", "accent": "#ffffff"},
+        "slate": {"name": "Slate Gray", "bg": "#1a1c23", "editor_bg": "#212431", "header_bg": "#2d3142", "border": "#4f5d75", "accent": "#ffffff"},
+    }
+
     def __init__(self, filename: str = None):
         super().__init__()
         self.filename = filename or "Untitled"
         self.detected_lang = "Plain Text"
-        self.theme_keys = list(THEMES.keys())
+        self.theme_keys = list(self.THEMES.keys())
         self.current_theme_index = 0
         self._chat_log: list[str] = []
 
@@ -199,10 +177,7 @@ class VieedEditor(App):
         self.detect_language()
         self.apply_theme(self.theme_keys[self.current_theme_index])
 
-    # --- LANGUAGE & THEME ---
-
     def detect_language(self) -> None:
-        """Detect the programming language offline using Pygments."""
         editor = self.query_one("#editor_area", TextArea)
         try:
             if self.filename != "Untitled":
@@ -216,7 +191,7 @@ class VieedEditor(App):
         self.update_header()
 
     def update_header(self) -> None:
-        theme_name = THEMES[self.theme_keys[self.current_theme_index]]["name"]
+        theme_name = self.THEMES[self.theme_keys[self.current_theme_index]]["name"]
         header = self.query_one("#header_bar", Static)
         header.update(
             f"Vieed | Author: vieexploit | File: {self.filename} | "
@@ -224,15 +199,13 @@ class VieedEditor(App):
         )
 
     def action_cycle_theme(self) -> None:
-        """Cycle through the monochrome/dark themes."""
         self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_keys)
         selected_key = self.theme_keys[self.current_theme_index]
         self.apply_theme(selected_key)
-        self.set_status(f"🎨 Color scheme switched to: {THEMES[selected_key]['name']}")
+        self.set_status(f"🎨 Color scheme switched to: {self.THEMES[selected_key]['name']}")
 
     def apply_theme(self, theme_key: str) -> None:
-        """Apply dynamic styles for the selected theme."""
-        t = THEMES[theme_key]
+        t = self.THEMES[theme_key]
         container = self.query_one("#viewport_container")
         header = self.query_one("#header_bar")
         editor = self.query_one("#editor_area")
@@ -245,25 +218,20 @@ class VieedEditor(App):
         editor.styles.background = t["editor_bg"]
         self.update_header()
 
-    # --- SEARCH (cursor actually jumps to the match) ---
-
     @staticmethod
     def _offset_for_location(text: str, location: tuple[int, int]) -> int:
-        """Convert (row, col) into an absolute offset in the text."""
         row, col = location
         lines = text.splitlines(keepends=True)
         return sum(len(line) for line in lines[:row]) + col
 
     @staticmethod
     def _location_for_offset(text: str, offset: int) -> tuple[int, int]:
-        """Convert an absolute offset into (row, col)."""
         before = text[:offset]
         row = before.count("\n")
         col = offset - (before.rfind("\n") + 1)
         return (row, col)
 
     def _find_and_jump(self, query: str) -> bool:
-        """Find the next match (from cursor, wrap-around), then highlight & jump."""
         editor = self.query_one("#editor_area", TextArea)
         text = editor.text
         if not query:
@@ -275,7 +243,7 @@ class VieedEditor(App):
 
         idx = text.find(query, start)
         if idx == -1:
-            idx = text.find(query)  # wrap around to top
+            idx = text.find(query)
         if idx == -1:
             return False
 
@@ -286,7 +254,6 @@ class VieedEditor(App):
         return True
 
     def action_toggle_search(self) -> None:
-        """Show/hide the search bar."""
         search_bar = self.query_one("#search_bar", Input)
         if search_bar.has_class("visible"):
             self._close_search()
@@ -303,10 +270,7 @@ class VieedEditor(App):
         search_bar.value = ""
         self.query_one("#editor_area", TextArea).focus()
 
-    # --- SIMPLE AUTOCOMPLETION ---
-
     def action_trigger_autocomplete(self) -> None:
-        """Suggest words based on tokens in the active document."""
         editor = self.query_one("#editor_area", TextArea)
         popup = self.query_one("#completion_popup", OptionList)
 
@@ -340,7 +304,6 @@ class VieedEditor(App):
         popup.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Insert the selected word from the autocomplete popup into the editor."""
         editor = self.query_one("#editor_area", TextArea)
         popup = self.query_one("#completion_popup", OptionList)
         selected_word = str(event.option.prompt)
@@ -358,17 +321,13 @@ class VieedEditor(App):
         editor.focus()
         self.set_status(f"✨ Autocomplete: '{selected_word}' inserted.")
 
-    # --- PANELS & STATUS ---
-
     def action_dismiss_panels(self) -> None:
-        """Close all floating panels (search, autocomplete, chat) and focus the editor."""
         self.query_one("#search_bar", Input).remove_class("visible")
         self.query_one("#chat_sidebar").remove_class("visible")
         self.query_one("#completion_popup", OptionList).remove_class("visible")
         self.query_one("#editor_area", TextArea).focus()
 
     def action_toggle_chat(self) -> None:
-        """Show/hide the AI chat sidebar."""
         chat = self.query_one("#chat_sidebar")
         if chat.has_class("visible"):
             chat.remove_class("visible")
@@ -378,7 +337,6 @@ class VieedEditor(App):
             self.query_one("#chat_input", Input).focus()
 
     def action_save_file(self) -> None:
-        """Save the editor content to the file."""
         if self.filename == "Untitled":
             self.set_status("⚠️ Save failed: run with a filename, e.g.: vieed code.py")
             return
@@ -392,13 +350,9 @@ class VieedEditor(App):
             self.set_status(f"❌ Error saving file: {e}")
 
     def set_status(self, msg: str) -> None:
-        """Update the status/notification bar message."""
         self.query_one("#status_bar", Static).update(f" {msg}")
 
-    # --- LOCAL AI INTEGRATION (ON-DEMAND) ---
-
     def action_analyze_error(self) -> None:
-        """Trigger AI Error Detector via Ctrl+B."""
         editor = self.query_one("#editor_area", TextArea)
 
         selected_text = editor.selected_text
@@ -416,7 +370,8 @@ class VieedEditor(App):
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
             f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
-        self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_ai_analysis))
+        # FIX: Added thread=True to handle blocking synchronous function call
+        self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_ai_analysis), thread=True)
 
     def _handle_ai_analysis(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
@@ -462,7 +417,8 @@ class VieedEditor(App):
                 f"Provide a helpful and concise answer."
             )
             self.set_status("🤖 Thinking...")
-            self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response))
+            # FIX: Added thread=True to handle blocking synchronous function call
+            self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response), thread=True)
 
     def _handle_chat_response(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
@@ -471,7 +427,6 @@ class VieedEditor(App):
         self.set_status("Ready")
 
     def _query_ollama(self, prompt: str, callback=None) -> None:
-        """Worker thread handler for interacting with local Ollama API."""
         try:
             payload = {
                 "model": DEFAULT_MODEL,
