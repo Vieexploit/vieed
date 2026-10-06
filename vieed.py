@@ -17,7 +17,8 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import TextArea, Input, Static, Label, OptionList
 from textual.widgets.option_list import Option
-from textual.widgets.textarea import Selection
+from textual.widgets import TextArea, Header, Footer, Input, OptionList
+from textual.widgets.text_area import Selection
 
 OLLAMA_URL = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
 DEFAULT_MODEL = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
