@@ -12,6 +12,7 @@ import httpx
 from functools import partial
 
 from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -20,30 +21,30 @@ from textual.widgets import TextArea, Input, Static, Label, OptionList
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
-OLLAMA_URL = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
-DEFAULT_MODEL = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
-MAX_CONTEXT_CHARS = 8000
-
 
 class HelpScreen(ModalScreen):
-    """Screen dialog untuk menampilkan daftar shortcut dan info fungsi Vieed."""
+    """Dialog screen displaying shortcut references and Vieed feature info."""
 
     BINDINGS = [("escape", "dismiss", "Close"), ("ctrl+h", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
         help_text = (
-            "[bold cyan]Vieed - Shortkey & Feature Reference[/bold cyan]\n"
+            "[bold cyan]Vieed - Shortcut & Feature Reference[/bold cyan]\n"
             "[dim]Created by vieexploit[/dim]\n\n"
-            "• [bold yellow]Ctrl + S[/bold yellow] : Save File\n"
-            "• [bold yellow]Ctrl + F[/bold yellow] : Search Text (Enter: Next, Esc: Close)\n"
-            "• [bold yellow]Ctrl + Space[/bold yellow] : Trigger Autocomplete Suggestion\n"
-            "• [bold yellow]Ctrl + B[/bold yellow] : AI Bug/Error Code Analysis\n"
-            "• [bold yellow]Ctrl + T[/bold yellow] : Toggle AI Chat Assistant Sidebar\n"
-            "• [bold yellow]Ctrl + P[/bold yellow] : Switch Color Theme (Carbon, OLED, Slate)\n"
-            "• [bold yellow]Ctrl + H[/bold yellow] : Open This Help Dialog\n"
-            "• [bold yellow]Ctrl + Q[/bold yellow] : Quit Vieed\n"
-            "• [bold yellow]Esc[/bold yellow]      : Dismiss Active Panels / Popups\n\n"
-            "[dim]Tekan ESC atau Ctrl+H untuk menutup dialog ini.[/dim]"
+            "• [bold yellow]Ctrl + S[/bold yellow]       : Save File\n"
+            "• [bold yellow]Ctrl + F[/bold yellow]       : Search Text (Enter: Next, Esc: Close)\n"
+            "• [bold yellow]Ctrl + Space[/bold yellow]   : Trigger Autocomplete Suggestion\n"
+            "• [bold yellow]Ctrl + B[/bold yellow]       : AI Bug/Error Code Analysis\n"
+            "• [bold yellow]Ctrl + T[/bold yellow]       : Toggle AI Chat Assistant Sidebar\n"
+            "• [bold yellow]Ctrl + P[/bold yellow]       : Switch Color Theme (Carbon, OLED, Slate)\n"
+            "• [bold yellow]Ctrl+Shift+C[/bold yellow]  : Copy Selected Text\n"
+            "• [bold yellow]Ctrl+Shift+V[/bold yellow]  : Paste Clipboard Text\n"
+            "• [bold yellow]Ctrl+Shift+X[/bold yellow]  : Cut Selected Text\n"
+            "• [bold yellow]Tab[/bold yellow]           : Insert Indentation/Tab in Editor\n"
+            "• [bold yellow]Ctrl + H[/bold yellow]       : Open This Help Dialog\n"
+            "• [bold yellow]Ctrl + Q[/bold yellow]       : Quit Vieed\n"
+            "• [bold yellow]Esc[/bold yellow]          : Dismiss Active Panels / Popups\n\n"
+            "[dim]Press ESC or Ctrl+H to close this dialog.[/dim]"
         )
         with Container(id="help_dialog"):
             yield Static(help_text)
@@ -174,6 +175,9 @@ class VieedEditor(App):
         Binding("ctrl+space", "trigger_autocomplete", "Autocomplete", show=True),
         Binding("ctrl+s", "save_file", "Save", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
+        Binding("ctrl+shift+c", "copy_text", "Copy", show=False),
+        Binding("ctrl+shift+v", "paste_text", "Paste", show=False),
+        Binding("ctrl+shift+x", "cut_text", "Cut", show=False),
         Binding("escape", "dismiss_panels", "Dismiss", show=False),
     ]
 
@@ -190,6 +194,9 @@ class VieedEditor(App):
         self.theme_keys = list(self.THEMES.keys())
         self.current_theme_index = 0
         self._chat_log: list[str] = []
+        self.ollama_url = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
+        self.default_model = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
+        self.max_context_chars = 8000
 
     def compose(self) -> ComposeResult:
         with Container(id="viewport_container"):
@@ -204,6 +211,9 @@ class VieedEditor(App):
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
+        # Tab tidak lagi berpindah fokus ke chat, melainkan menyisipkan indentasi
+        editor.can_focus_tab = False
+
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, "r", encoding="utf-8") as f:
@@ -217,6 +227,31 @@ class VieedEditor(App):
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_copy_text(self) -> None:
+        editor = self.query_one("#editor_area", TextArea)
+        if editor.selected_text:
+            self.copy_to_clipboard(editor.selected_text)
+            self.set_status("📋 Text copied to clipboard.")
+
+    def action_cut_text(self) -> None:
+        editor = self.query_one("#editor_area", TextArea)
+        if editor.selected_text:
+            self.copy_to_clipboard(editor.selected_text)
+            editor.replace("", editor.selection.start, editor.selection.end)
+            self.set_status("✂️ Text cut to clipboard.")
+
+    def action_paste_text(self) -> None:
+        editor = self.query_one("#editor_area", TextArea)
+        try:
+            pasted_text = self.app.get_clipboard()
+            if pasted_text:
+                editor.insert(pasted_text)
+                self.set_status("📌 Text pasted from clipboard.")
+            else:
+                self.set_status("⚠️ Clipboard is empty.")
+        except Exception as e:
+            self.set_status(f"❌ Failed to paste text: {e}")
 
     def detect_language(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -379,7 +414,7 @@ class VieedEditor(App):
 
     def action_save_file(self) -> None:
         if self.filename == "Untitled":
-            self.set_status("⚠️ Save failed: run with a filename, e.g.: vieed code.py")
+            self.set_status("⚠️ Save failed: run with a filename, e.g.: vieed code.cpp")
             return
 
         editor = self.query_one("#editor_area", TextArea)
@@ -398,18 +433,31 @@ class VieedEditor(App):
 
         selected_text = editor.selected_text
         if not selected_text:
-            cursor_row = editor.cursor_location[0]
-            lines = editor.text.splitlines()
-            selected_text = lines[cursor_row] if cursor_row < len(lines) else ""
+            selected_text = editor.text
 
         if not selected_text.strip():
-            self.set_status("⚠️️ No code/line selected for analysis.")
+            self.set_status("⚠️ Editor is empty.")
             return
 
         self.set_status("🤖 AI is analyzing code for bugs/errors...")
+
+        chat_sidebar = self.query_one("#chat_sidebar")
+        if not chat_sidebar.has_class("visible"):
+            chat_sidebar.add_class("visible")
+
+        # PERBAIKAN BUG: Karakter C++ di-escape menggunakan escape() agar Rich Markup tidak crash
+        user_prompt_log = f"[bold cyan]You (Bug Check):[/bold cyan]\nCheck this snippet:\n```\n{escape(selected_text)}\n```"
+        self._chat_log.append(user_prompt_log)
+
+        chat_box = self.query_one("#chat_response", Static)
+        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
+        chat_box.update("\n\n".join(self._chat_log))
+        chat_scroll.scroll_end(animate=False)
+
         system_instruction = (
-            f"You are Vieed AI, an embedded assistant inside Vieed (a smart TUI text editor created by vieexploit). "
-            f"You are powered by the {DEFAULT_MODEL} model developed by Alibaba Cloud. "
+            f"Your Identity:\n"
+            f"- You are 'Vieed AI', an embedded AI assistant inside Vieed (a smart offline TUI text editor created by vieexploit).\n"
+            f"- You are powered by {self.default_model} developed by Alibaba Cloud.\n\n"
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
             f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
@@ -418,13 +466,10 @@ class VieedEditor(App):
     def _handle_ai_analysis(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
         chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        chat_sidebar = self.query_one("#chat_sidebar")
 
-        if not chat_sidebar.has_class("visible"):
-            chat_sidebar.add_class("visible")
-
-        formatted = f"[bold green]Bug Analysis Result:[/bold green]\n{response_text}"
-        chat_box.update(formatted)
+        # Respon AI juga di-escape agar sintaks/contoh kode aman dari parser Rich
+        self._chat_log.append(f"[bold green]Vieed AI (Bug Analysis):[/bold green]\n{escape(response_text)}")
+        chat_box.update("\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
         self.set_status("✨ AI Analysis complete.")
 
@@ -451,19 +496,19 @@ class VieedEditor(App):
             chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
             editor = self.query_one("#editor_area", TextArea)
 
-            self._chat_log.append(f"[bold cyan]You:[/bold cyan] {user_msg}")
+            self._chat_log.append(f"[bold cyan]You:[/bold cyan] {escape(user_msg)}")
             chat_box.update("\n\n".join(self._chat_log))
             chat_scroll.scroll_end(animate=False)
 
-            code_context = editor.text[:MAX_CONTEXT_CHARS]
+            code_context = editor.text[:self.max_context_chars]
             prompt = (
                 f"Your Identity System Prompt:\n"
                 f"- You are 'Vieed AI', an embedded AI assistant built directly into Vieed, a smart offline TUI text editor created by vieexploit.\n"
-                f"- You are powered by the underlying LLM model: {DEFAULT_MODEL} (developed by Alibaba Cloud).\n"
-                f"- If asked who created you or what application this is, answer clearly that this editor is Vieed created by vieexploit, and your AI engine model is {DEFAULT_MODEL} by Alibaba.\n\n"
+                f"- You are powered by the underlying LLM model: {self.default_model} (developed by Alibaba Cloud).\n"
+                f"- If asked who created you or what application this is, answer clearly that this editor is Vieed created by vieexploit, and your AI engine model is {self.default_model} by Alibaba.\n\n"
                 f"Context code ({self.detected_lang}):\n```\n{code_context}\n```\n\n"
                 f"User question: {user_msg}\n"
-                f"Provide a helpful and concise answer in Indonesian or English matching user's query."
+                f"Provide a helpful and concise answer in English."
             )
             self.set_status("🤖 Thinking...")
             self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response), thread=True)
@@ -471,7 +516,7 @@ class VieedEditor(App):
     def _handle_chat_response(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
         chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        self._chat_log.append(f"[bold green]Vieed AI:[/bold green] {response_text}")
+        self._chat_log.append(f"[bold green]Vieed AI:[/bold green]\n{escape(response_text)}")
         chat_box.update("\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
         self.set_status("Ready")
@@ -479,18 +524,18 @@ class VieedEditor(App):
     def _query_ollama(self, prompt: str, callback=None) -> None:
         try:
             payload = {
-                "model": DEFAULT_MODEL,
+                "model": self.default_model,
                 "prompt": prompt,
                 "stream": False,
             }
-            with httpx.Client(timeout=30.0) as client:
-                res = client.post(OLLAMA_URL, json=payload)
+            with httpx.Client(timeout=120.0) as client:
+                res = client.post(self.ollama_url, json=payload)
                 if res.status_code == 200:
                     text = res.json().get("response", "No response from model.")
                 else:
                     text = f"Ollama Error (HTTP {res.status_code}): {res.text}"
         except Exception as e:
-            text = f"Failed to connect to Ollama ({OLLAMA_URL}): {e}"
+            text = f"Failed to connect to Ollama ({self.ollama_url}): {e}"
 
         if callback:
             self.call_from_thread(callback, text)
