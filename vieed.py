@@ -14,7 +14,8 @@ from functools import partial
 from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import TextArea, Input, Static, Label, OptionList
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
@@ -24,13 +25,41 @@ DEFAULT_MODEL = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
 MAX_CONTEXT_CHARS = 8000
 
 
+class HelpScreen(ModalScreen):
+    """Screen dialog untuk menampilkan daftar shortcut dan info fungsi Vieed."""
+
+    BINDINGS = [("escape", "dismiss", "Close"), ("ctrl+h", "dismiss", "Close")]
+
+    def compose(self) -> ComposeResult:
+        help_text = (
+            "[bold cyan]Vieed - Shortkey & Feature Reference[/bold cyan]\n"
+            "[dim]Created by vieexploit[/dim]\n\n"
+            "• [bold yellow]Ctrl + S[/bold yellow] : Save File\n"
+            "• [bold yellow]Ctrl + F[/bold yellow] : Search Text (Enter: Next, Esc: Close)\n"
+            "• [bold yellow]Ctrl + Space[/bold yellow] : Trigger Autocomplete Suggestion\n"
+            "• [bold yellow]Ctrl + B[/bold yellow] : AI Bug/Error Code Analysis\n"
+            "• [bold yellow]Ctrl + T[/bold yellow] : Toggle AI Chat Assistant Sidebar\n"
+            "• [bold yellow]Ctrl + P[/bold yellow] : Switch Color Theme (Carbon, OLED, Slate)\n"
+            "• [bold yellow]Ctrl + H[/bold yellow] : Open This Help Dialog\n"
+            "• [bold yellow]Ctrl + Q[/bold yellow] : Quit Vieed\n"
+            "• [bold yellow]Esc[/bold yellow]      : Dismiss Active Panels / Popups\n\n"
+            "[dim]Tekan ESC atau Ctrl+H untuk menutup dialog ini.[/dim]"
+        )
+        with Container(id="help_dialog"):
+            yield Static(help_text)
+
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
+
+
 class ChatSidebar(Container):
     """Sidebar for the AI Q&A session based on the active code context."""
 
     def compose(self) -> ComposeResult:
         yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]")
         yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
-        yield Static("", id="chat_response", classes="chat_box")
+        with VerticalScroll(id="chat_scroll_area"):
+            yield Static("", id="chat_response")
         yield Input(placeholder="Ask something about this code...", id="chat_input")
 
 
@@ -115,16 +144,24 @@ class VieedEditor(App):
         display: block;
     }
 
-    .chat_box {
+    #chat_scroll_area {
         height: 1fr;
         border: solid #333333;
         padding: 1;
         margin: 1 0;
-        overflow-y: scroll;
     }
 
     #chat_hint {
         color: #666666;
+    }
+
+    #help_dialog {
+        padding: 2;
+        background: #1c1c1c;
+        border: thick #00ffaf;
+        width: 60;
+        height: auto;
+        align: center middle;
     }
     """
 
@@ -133,6 +170,7 @@ class VieedEditor(App):
         Binding("ctrl+b", "analyze_error", "AI Bug Check", show=True),
         Binding("ctrl+t", "toggle_chat", "AI Chat", show=True),
         Binding("ctrl+p", "cycle_theme", "Switch Theme", show=True),
+        Binding("ctrl+h", "show_help", "Help", show=True),
         Binding("ctrl+space", "trigger_autocomplete", "Autocomplete", show=True),
         Binding("ctrl+s", "save_file", "Save", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
@@ -162,7 +200,7 @@ class VieedEditor(App):
                     yield OptionList(id="completion_popup")
                     yield Input(placeholder="Search text... (Enter: next, Esc: close)", id="search_bar")
                 yield ChatSidebar(id="chat_sidebar")
-            yield Static(" Ready | Ctrl+P: Theme | Ctrl+Space: Complete", id="status_bar")
+            yield Static(" Ready | Ctrl+H: Help | Ctrl+P: Theme | Ctrl+T: AI Chat", id="status_bar")
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -176,6 +214,9 @@ class VieedEditor(App):
 
         self.detect_language()
         self.apply_theme(self.theme_keys[self.current_theme_index])
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def detect_language(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -362,19 +403,21 @@ class VieedEditor(App):
             selected_text = lines[cursor_row] if cursor_row < len(lines) else ""
 
         if not selected_text.strip():
-            self.set_status("⚠️ No code/line selected for analysis.")
+            self.set_status("⚠️️ No code/line selected for analysis.")
             return
 
         self.set_status("🤖 AI is analyzing code for bugs/errors...")
-        prompt = (
+        system_instruction = (
+            f"You are Vieed AI, an embedded assistant inside Vieed (a smart TUI text editor created by vieexploit). "
+            f"You are powered by the {DEFAULT_MODEL} model developed by Alibaba Cloud. "
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
             f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
-        # FIX: Added thread=True to handle blocking synchronous function call
-        self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_ai_analysis), thread=True)
+        self.run_worker(partial(self._query_ollama, system_instruction, callback=self._handle_ai_analysis), thread=True)
 
     def _handle_ai_analysis(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
+        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
         chat_sidebar = self.query_one("#chat_sidebar")
 
         if not chat_sidebar.has_class("visible"):
@@ -382,6 +425,7 @@ class VieedEditor(App):
 
         formatted = f"[bold green]Bug Analysis Result:[/bold green]\n{response_text}"
         chat_box.update(formatted)
+        chat_scroll.scroll_end(animate=False)
         self.set_status("✨ AI Analysis complete.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -404,26 +448,32 @@ class VieedEditor(App):
 
             event.input.value = ""
             chat_box = self.query_one("#chat_response", Static)
+            chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
             editor = self.query_one("#editor_area", TextArea)
 
             self._chat_log.append(f"[bold cyan]You:[/bold cyan] {user_msg}")
             chat_box.update("\n\n".join(self._chat_log))
+            chat_scroll.scroll_end(animate=False)
 
             code_context = editor.text[:MAX_CONTEXT_CHARS]
             prompt = (
-                f"You are Vieed AI, an assistant inside a TUI editor. "
+                f"Your Identity System Prompt:\n"
+                f"- You are 'Vieed AI', an embedded AI assistant built directly into Vieed, a smart offline TUI text editor created by vieexploit.\n"
+                f"- You are powered by the underlying LLM model: {DEFAULT_MODEL} (developed by Alibaba Cloud).\n"
+                f"- If asked who created you or what application this is, answer clearly that this editor is Vieed created by vieexploit, and your AI engine model is {DEFAULT_MODEL} by Alibaba.\n\n"
                 f"Context code ({self.detected_lang}):\n```\n{code_context}\n```\n\n"
                 f"User question: {user_msg}\n"
-                f"Provide a helpful and concise answer."
+                f"Provide a helpful and concise answer in Indonesian or English matching user's query."
             )
             self.set_status("🤖 Thinking...")
-            # FIX: Added thread=True to handle blocking synchronous function call
             self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response), thread=True)
 
     def _handle_chat_response(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Static)
+        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
         self._chat_log.append(f"[bold green]Vieed AI:[/bold green] {response_text}")
         chat_box.update("\n\n".join(self._chat_log))
+        chat_scroll.scroll_end(animate=False)
         self.set_status("Ready")
 
     def _query_ollama(self, prompt: str, callback=None) -> None:
