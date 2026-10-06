@@ -15,9 +15,8 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import TextArea, Input, Static, Label, OptionList
+from textual.widgets import TextArea, Input, Static, Label, OptionList, Header, Footer
 from textual.widgets.option_list import Option
-from textual.widgets import TextArea, Header, Footer, Input, OptionList
 from textual.widgets.text_area import Selection
 
 OLLAMA_URL = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -271,13 +270,12 @@ class VieedEditor(App):
             return False
 
         start = self._offset_for_location(text, editor.cursor_location)
-        # If the current match is selected, start AFTER it (find-next behavior)
         if editor.selected_text == query:
             start += len(query)
 
         idx = text.find(query, start)
         if idx == -1:
-            idx = text.find(query)  # wrap around to the top of the document
+            idx = text.find(query)  # wrap around to top
         if idx == -1:
             return False
 
@@ -294,7 +292,6 @@ class VieedEditor(App):
             self._close_search()
         else:
             search_bar.add_class("visible")
-            # Pre-fill with the currently selected text, if any
             editor = self.query_one("#editor_area", TextArea)
             if editor.selected_text and "\n" not in editor.selected_text:
                 search_bar.value = editor.selected_text
@@ -414,24 +411,36 @@ class VieedEditor(App):
             self.set_status("⚠️ No code/line selected for analysis.")
             return
 
-        self.set_status("🔄 AI is analyzing the code...")
+        self.set_status("🤖 AI is analyzing code for bugs/errors...")
         prompt = (
-            f"You are a concise linter/debugger. Analyze the following {self.detected_lang} code "
-            f"and state the error and its fix in 1-2 short sentences:\n\n{selected_text}"
+            f"Review this {self.detected_lang} snippet for bugs or potential issues. "
+            f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
-        self.run_worker(partial(self._call_ollama_worker, prompt, "status"), thread=True)
+        self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_ai_analysis))
+
+    def _handle_ai_analysis(self, response_text: str) -> None:
+        chat_box = self.query_one("#chat_response", Static)
+        chat_sidebar = self.query_one("#chat_sidebar")
+
+        if not chat_sidebar.has_class("visible"):
+            chat_sidebar.add_class("visible")
+
+        formatted = f"[bold green]Bug Analysis Result:[/bold green]\n{response_text}"
+        chat_box.update(formatted)
+        self.set_status("✨ AI Analysis complete.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle submit from the Search Input or the AI Chat Input."""
         if event.input.id == "search_bar":
-            query = event.value
+            query = event.value.strip()
             if not query:
-                self.set_status("⚠️ Enter text to search for.")
+                self._close_search()
                 return
-            if self._find_and_jump(query):
-                self.set_status(f"🔍 Found '{query}'. Enter: next, Esc: close.")
+
+            found = self._find_and_jump(query)
+            if not found:
+                self.set_status(f"❌ Search: '{query}' not found.")
             else:
-                self.set_status(f"❌ Text '{query}' not found.")
+                self.set_status(f"🔍 Found: '{query}'")
 
         elif event.input.id == "chat_input":
             user_msg = event.value.strip()
@@ -439,62 +448,53 @@ class VieedEditor(App):
                 return
 
             event.input.value = ""
-            editor = self.query_one("#editor_area", TextArea)
             chat_box = self.query_one("#chat_response", Static)
+            editor = self.query_one("#editor_area", TextArea)
 
-            context = editor.text[:MAX_CONTEXT_CHARS]
-            full_prompt = (
-                f"Current file context ({self.filename}, Language: {self.detected_lang}):\n"
-                f"```\n{context}\n```\n\n"
+            self._chat_log.append(f"[bold cyan]You:[/bold cyan] {user_msg}")
+            chat_box.update("\n\n".join(self._chat_log))
+
+            code_context = editor.text[:MAX_CONTEXT_CHARS]
+            prompt = (
+                f"You are Vieed AI, an assistant inside a TUI editor. "
+                f"Context code ({self.detected_lang}):\n```\n{code_context}\n```\n\n"
                 f"User question: {user_msg}\n"
-                f"Answer briefly, accurately, and helpfully."
+                f"Provide a helpful and concise answer."
             )
+            self.set_status("🤖 Thinking...")
+            self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response))
 
-            self._chat_log.append(f"[bold yellow]You:[/bold yellow] {user_msg}")
-            chat_box.update("\n\n".join(self._chat_log) + "\n\n[bold cyan]Vieed AI:[/bold cyan] Thinking...")
-            self.run_worker(partial(self._call_ollama_worker, full_prompt, "chat"), thread=True)
+    def _handle_chat_response(self, response_text: str) -> None:
+        chat_box = self.query_one("#chat_response", Static)
+        self._chat_log.append(f"[bold green]Vieed AI:[/bold green] {response_text}")
+        chat_box.update("\n\n".join(self._chat_log))
+        self.set_status("Ready")
 
-    def _call_ollama_worker(self, prompt: str, target: str) -> None:
-        """Synchronous worker (runs in a separate thread) so the UI doesn't freeze."""
-        payload = {
-            "model": DEFAULT_MODEL,
-            "prompt": prompt,
-            "stream": False,
-        }
+    def _query_ollama(self, prompt: str, callback=None) -> None:
+        """Worker thread handler for interacting with local Ollama API."""
         try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(OLLAMA_URL, json=payload)
-            response.raise_for_status()
-            result = response.json().get("response", "").strip()
+            payload = {
+                "model": DEFAULT_MODEL,
+                "prompt": prompt,
+                "stream": False,
+            }
+            with httpx.Client(timeout=30.0) as client:
+                res = client.post(OLLAMA_URL, json=payload)
+                if res.status_code == 200:
+                    text = res.json().get("response", "No response from model.")
+                else:
+                    text = f"Ollama Error (HTTP {res.status_code}): {res.text}"
         except Exception as e:
-            self.call_from_thread(self._handle_ai_error, str(e), target)
-            return
+            text = f"Failed to connect to Ollama ({OLLAMA_URL}): {e}"
 
-        if result:
-            self.call_from_thread(self._handle_ai_response, result, target)
-        else:
-            self.call_from_thread(self._handle_ai_error, "Empty response from model.", target)
-
-    def _handle_ai_response(self, response_text: str, target: str) -> None:
-        """Handle a successful AI worker response."""
-        if target == "status":
-            self.set_status(f"🤖 AI: {response_text}")
-        elif target == "chat":
-            self._chat_log.append(f"[bold cyan]Vieed AI:[/bold cyan] {response_text}")
-            self.query_one("#chat_response", Static).update("\n\n".join(self._chat_log))
-
-    def _handle_ai_error(self, error: str, target: str) -> None:
-        """Surface AI errors politely — not just on the status bar."""
-        if target == "chat":
-            self._chat_log.append(f"[bold red]Vieed AI:[/bold red] ⚠️ Failed: {error}")
-            self.query_one("#chat_response", Static).update("\n\n".join(self._chat_log))
-        self.set_status(f"❌ Failed to connect to Ollama: {error}")
+        if callback:
+            self.call_from_thread(callback, text)
 
 
-def main() -> None:
-    """Entry point for the 'vieed' console script and python vieed.py."""
-    target_file = sys.argv[1] if len(sys.argv) > 1 else "Untitled"
-    VieedEditor(filename=target_file).run()
+def main():
+    filename = sys.argv[1] if len(sys.argv) > 1 else "Untitled"
+    app = VieedEditor(filename=filename)
+    app.run()
 
 
 if __name__ == "__main__":
