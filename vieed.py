@@ -12,12 +12,11 @@ import httpx
 from functools import partial
 
 from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
-from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import TextArea, Input, Static, Label, OptionList
+from textual.widgets import TextArea, Input, Static, Label, OptionList, Markdown
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
@@ -60,7 +59,8 @@ class ChatSidebar(Container):
         yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]")
         yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
         with VerticalScroll(id="chat_scroll_area"):
-            yield Static("", id="chat_response")
+            # Menggunakan Markdown widget agar rendering sintaks & kode C++ tidak membuat Rich crash
+            yield Markdown("", id="chat_response")
         yield Input(placeholder="Ask something about this code...", id="chat_input")
 
 
@@ -211,7 +211,6 @@ class VieedEditor(App):
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
-        # Tab tidak lagi berpindah fokus ke chat, melainkan menyisipkan indentasi
         editor.can_focus_tab = False
 
         if os.path.exists(self.filename):
@@ -445,13 +444,13 @@ class VieedEditor(App):
         if not chat_sidebar.has_class("visible"):
             chat_sidebar.add_class("visible")
 
-        # PERBAIKAN BUG: Karakter C++ di-escape menggunakan escape() agar Rich Markup tidak crash
-        user_prompt_log = f"[bold cyan]You (Bug Check):[/bold cyan]\nCheck this snippet:\n```\n{escape(selected_text)}\n```"
+        # Format menggunakan standard Markdown
+        user_prompt_log = f"**You (Bug Check):**\nCheck this snippet:\n```\n{selected_text}\n```"
         self._chat_log.append(user_prompt_log)
 
-        chat_box = self.query_one("#chat_response", Static)
+        chat_box = self.query_one("#chat_response", Markdown)
         chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        chat_box.update("\n\n".join(self._chat_log))
+        chat_box.update("\n\n---\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
 
         system_instruction = (
@@ -464,12 +463,11 @@ class VieedEditor(App):
         self.run_worker(partial(self._query_ollama, system_instruction, callback=self._handle_ai_analysis), thread=True)
 
     def _handle_ai_analysis(self, response_text: str) -> None:
-        chat_box = self.query_one("#chat_response", Static)
+        chat_box = self.query_one("#chat_response", Markdown)
         chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
 
-        # Respon AI juga di-escape agar sintaks/contoh kode aman dari parser Rich
-        self._chat_log.append(f"[bold green]Vieed AI (Bug Analysis):[/bold green]\n{escape(response_text)}")
-        chat_box.update("\n\n".join(self._chat_log))
+        self._chat_log.append(f"**Vieed AI (Bug Analysis):**\n{response_text}")
+        chat_box.update("\n\n---\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
         self.set_status("✨ AI Analysis complete.")
 
@@ -492,12 +490,12 @@ class VieedEditor(App):
                 return
 
             event.input.value = ""
-            chat_box = self.query_one("#chat_response", Static)
+            chat_box = self.query_one("#chat_response", Markdown)
             chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
             editor = self.query_one("#editor_area", TextArea)
 
-            self._chat_log.append(f"[bold cyan]You:[/bold cyan] {escape(user_msg)}")
-            chat_box.update("\n\n".join(self._chat_log))
+            self._chat_log.append(f"**You:** {user_msg}")
+            chat_box.update("\n\n---\n\n".join(self._chat_log))
             chat_scroll.scroll_end(animate=False)
 
             code_context = editor.text[:self.max_context_chars]
@@ -514,10 +512,10 @@ class VieedEditor(App):
             self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response), thread=True)
 
     def _handle_chat_response(self, response_text: str) -> None:
-        chat_box = self.query_one("#chat_response", Static)
+        chat_box = self.query_one("#chat_response", Markdown)
         chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        self._chat_log.append(f"[bold green]Vieed AI:[/bold green]\n{escape(response_text)}")
-        chat_box.update("\n\n".join(self._chat_log))
+        self._chat_log.append(f"**Vieed AI:**\n{response_text}")
+        chat_box.update("\n\n---\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
         self.set_status("Ready")
 
