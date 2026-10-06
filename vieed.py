@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import httpx
-from functools import partial
+import asyncio
 
 from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
 from textual.app import App, ComposeResult
@@ -35,6 +35,7 @@ class HelpScreen(ModalScreen):
             "• [bold yellow]Ctrl + Space[/bold yellow]   : Trigger Autocomplete Suggestion\n"
             "• [bold yellow]Ctrl + B[/bold yellow]       : AI Bug/Error Code Analysis\n"
             "• [bold yellow]Ctrl + T[/bold yellow]       : Toggle AI Chat Assistant Sidebar\n"
+            "• [bold yellow]Ctrl + R[/bold yellow]       : Refresh / Reset AI & UI State\n"
             "• [bold yellow]Ctrl + P[/bold yellow]       : Switch Color Theme (Carbon, OLED, Slate)\n"
             "• [bold yellow]Ctrl+Shift+C[/bold yellow]  : Copy Selected Text\n"
             "• [bold yellow]Ctrl+Shift+V[/bold yellow]  : Paste Clipboard Text\n"
@@ -59,7 +60,6 @@ class ChatSidebar(Container):
         yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]")
         yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
         with VerticalScroll(id="chat_scroll_area"):
-            # Menggunakan Markdown widget agar rendering sintaks & kode C++ tidak membuat Rich crash
             yield Markdown("", id="chat_response")
         yield Input(placeholder="Ask something about this code...", id="chat_input")
 
@@ -170,6 +170,7 @@ class VieedEditor(App):
         Binding("ctrl+f", "toggle_search", "Search", show=True),
         Binding("ctrl+b", "analyze_error", "AI Bug Check", show=True),
         Binding("ctrl+t", "toggle_chat", "AI Chat", show=True),
+        Binding("ctrl+r", "refresh_app", "Refresh UI/AI", show=True),
         Binding("ctrl+p", "cycle_theme", "Switch Theme", show=True),
         Binding("ctrl+h", "show_help", "Help", show=True),
         Binding("ctrl+space", "trigger_autocomplete", "Autocomplete", show=True),
@@ -194,6 +195,7 @@ class VieedEditor(App):
         self.theme_keys = list(self.THEMES.keys())
         self.current_theme_index = 0
         self._chat_log: list[str] = []
+        self._ai_task: asyncio.Task = None
         self.ollama_url = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
         self.default_model = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
         self.max_context_chars = 8000
@@ -207,7 +209,7 @@ class VieedEditor(App):
                     yield OptionList(id="completion_popup")
                     yield Input(placeholder="Search text... (Enter: next, Esc: close)", id="search_bar")
                 yield ChatSidebar(id="chat_sidebar")
-            yield Static(" Ready | Ctrl+H: Help | Ctrl+P: Theme | Ctrl+T: AI Chat", id="status_bar")
+            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat", id="status_bar")
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -223,6 +225,18 @@ class VieedEditor(App):
 
         self.detect_language()
         self.apply_theme(self.theme_keys[self.current_theme_index])
+
+    def action_refresh_app(self) -> None:
+        """Membatalkan task AI aktif jika ada dan menyegarkan tampilan UI."""
+        if self._ai_task and not self._ai_task.done():
+            self._ai_task.cancel()
+            self._ai_task = None
+            self.set_status("🔄 AI task cancelled & UI refreshed.")
+        else:
+            self.set_status("🔄 Refreshed.")
+
+        self.refresh()
+        self.query_one("#editor_area", TextArea).focus()
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
@@ -444,7 +458,6 @@ class VieedEditor(App):
         if not chat_sidebar.has_class("visible"):
             chat_sidebar.add_class("visible")
 
-        # Format menggunakan standard Markdown
         user_prompt_log = f"**You (Bug Check):**\nCheck this snippet:\n```\n{selected_text}\n```"
         self._chat_log.append(user_prompt_log)
 
@@ -460,7 +473,14 @@ class VieedEditor(App):
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
             f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
-        self.run_worker(partial(self._query_ollama, system_instruction, callback=self._handle_ai_analysis), thread=True)
+        
+        # Batalkan request sebelumnya jika ada
+        if self._ai_task and not self._ai_task.done():
+            self._ai_task.cancel()
+
+        self._ai_task = asyncio.create_task(
+            self._query_ollama_async(system_instruction, callback=self._handle_ai_analysis)
+        )
 
     def _handle_ai_analysis(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Markdown)
@@ -509,7 +529,13 @@ class VieedEditor(App):
                 f"Provide a helpful and concise answer in English."
             )
             self.set_status("🤖 Thinking...")
-            self.run_worker(partial(self._query_ollama, prompt, callback=self._handle_chat_response), thread=True)
+
+            if self._ai_task and not self._ai_task.done():
+                self._ai_task.cancel()
+
+            self._ai_task = asyncio.create_task(
+                self._query_ollama_async(prompt, callback=self._handle_chat_response)
+            )
 
     def _handle_chat_response(self, response_text: str) -> None:
         chat_box = self.query_one("#chat_response", Markdown)
@@ -519,24 +545,29 @@ class VieedEditor(App):
         chat_scroll.scroll_end(animate=False)
         self.set_status("Ready")
 
-    def _query_ollama(self, prompt: str, callback=None) -> None:
+    async def _query_ollama_async(self, prompt: str, callback=None) -> None:
+        """Fully asynchronous Ollama request to prevent freezing the TUI event loop."""
+        text = ""
         try:
             payload = {
                 "model": self.default_model,
                 "prompt": prompt,
                 "stream": False,
             }
-            with httpx.Client(timeout=120.0) as client:
-                res = client.post(self.ollama_url, json=payload)
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                res = await client.post(self.ollama_url, json=payload)
                 if res.status_code == 200:
                     text = res.json().get("response", "No response from model.")
                 else:
                     text = f"Ollama Error (HTTP {res.status_code}): {res.text}"
+        except asyncio.CancelledError:
+            text = "⚠️ Request cancelled by user."
+            return
         except Exception as e:
             text = f"Failed to connect to Ollama ({self.ollama_url}): {e}"
 
         if callback:
-            self.call_from_thread(callback, text)
+            callback(text)
 
 
 def main():
