@@ -284,7 +284,7 @@ class VieedEditor(App):
         header = self.query_one("#header_bar", Static)
         header.update(
             f"Vieed | Author: vieexploit | File: {self.filename} | "
-            f"Lang: {self.detected_lang} | Theme: {theme_name}"
+            f"Lang: {self.detected_lang} | Theme: theme_name"
         )
 
     def action_cycle_theme(self) -> None:
@@ -473,8 +473,7 @@ class VieedEditor(App):
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
             f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
         )
-        
-        # Batalkan request sebelumnya jika ada
+
         if self._ai_task and not self._ai_task.done():
             self._ai_task.cancel()
 
