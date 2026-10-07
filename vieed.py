@@ -12,6 +12,7 @@ import httpx
 import asyncio
 
 from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -63,7 +64,7 @@ class CodeBlockWidget(Container):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="code_block_header"):
-            yield Label(f"[dim]{self.lang}[/dim]", classes="code_block_lang")
+            yield Label(f"[dim]{escape(self.lang)}[/dim]", classes="code_block_lang")
             yield Button("📋 Copy", id="btn_copy_block", classes="copy_code_btn")
         yield Static(self.code_text, classes="code_block_content")
 
@@ -89,7 +90,8 @@ class ChatMessageWidget(Container):
     def compose(self) -> ComposeResult:
         is_ai = "Vieed AI" in self.sender
         header_color = "cyan" if is_ai else "green"
-        yield Label(f"[{header_color}][bold]{self.sender}:[/bold][/{header_color}]", classes="msg_sender")
+        safe_sender = escape(self.sender)
+        yield Label(f"[{header_color}][bold]{safe_sender}:[/bold][/{header_color}]", classes="msg_sender")
 
         # Split regular text and code blocks (```lang ... ```)
         parts = re.split(r"(```[a-zA-Z0-9+#-]*\n.*?```)", self.text, flags=re.DOTALL)
@@ -103,7 +105,7 @@ class ChatMessageWidget(Container):
                 code_content = "\n".join(lines[1:-1])
                 yield CodeBlockWidget(code_text=code_content, lang=lang)
             else:
-                yield Static(part.strip(), classes="msg_text")
+                yield Static(escape(part.strip()), classes="msg_text")
 
 
 class ChatSidebar(Container):
@@ -313,6 +315,7 @@ class VieedEditor(App):
         self.theme_keys = list(self.THEMES.keys())
         self.current_theme_index = 0
         self._ai_task: asyncio.Task = None
+        self.last_ai_fix_code: str = ""
         self.internal_clipboard = ""
         self.ollama_url = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
         self.default_model = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
@@ -584,21 +587,27 @@ class VieedEditor(App):
             self.set_status("⚠️ Editor is empty.")
             return
 
-        self.set_status("🤖 AI is analyzing code for bugs/errors...")
+        self.set_status("🤖 AI is analyzing code...")
 
         chat_sidebar = self.query_one("#chat_sidebar")
         if not chat_sidebar.has_class("visible"):
             chat_sidebar.add_class("visible")
 
-        user_prompt_log = f"Check this snippet for bugs:\n```\n{selected_text}\n```"
+        user_prompt_log = f"Check code status / bugs:\n```\n{selected_text}\n```"
         self._add_chat_message("You (Bug Check)", user_prompt_log)
 
         system_instruction = (
             f"Your Identity:\n"
             f"- You are 'Vieed AI', an embedded AI assistant inside Vieed (a smart offline TUI text editor created by vieexploit).\n"
-            f"- You are powered by {self.default_model} developed by Alibaba Cloud.\n\n"
-            f"Review this {self.detected_lang} snippet for bugs or potential issues. "
-            f"Be concise, point out exact problems, and provide fixed code using markdown blocks (```): \n\n{selected_text}"
+            f"- Model: {self.default_model}.\n\n"
+            f"Task: Inspect the following {self.detected_lang} code.\n"
+            f"IMPORTANT RULES:\n"
+            f"1. First, check if the code is ALREADY correct and contains NO major bugs or syntax errors.\n"
+            f"2. If the code is GOOD and error-free (or if it matches a previous fix), explicitly state: '✅ Kode sudah benar / tidak ditemukan bug!'.\n"
+            f"3. Do NOT make up fake bugs or fight over minor style preferences if the code works.\n"
+            f"4. If the code is good, politely ask the user if they want to add new features or if that's all they need (e.g., 'Apakah ada fitur tambahan yang ingin dibuat, atau kodenya sudah sesuai?').\n"
+            f"5. ONLY if there are ACTUAL syntax/logic errors, explain them clearly and provide the corrected code wrapped in markdown block (```).\n\n"
+            f"Code snippet to check:\n{selected_text}"
         )
 
         if self._ai_task and not self._ai_task.done():
@@ -609,7 +618,11 @@ class VieedEditor(App):
         )
 
     def _handle_ai_analysis(self, response_text: str) -> None:
-        self._add_chat_message("Vieed AI (Bug Analysis)", response_text)
+        code_blocks = re.findall(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*?)```", response_text, flags=re.DOTALL)
+        if code_blocks:
+            self.last_ai_fix_code = code_blocks[-1].strip()
+
+        self._add_chat_message("Vieed AI (Bug Check)", response_text)
         self.set_status("✨ AI Analysis complete.")
 
     def _add_chat_message(self, sender: str, text: str) -> None:
@@ -645,11 +658,11 @@ class VieedEditor(App):
             prompt = (
                 f"Your Identity System Prompt:\n"
                 f"- You are 'Vieed AI', an embedded AI assistant built directly into Vieed, a smart offline TUI text editor created by vieexploit.\n"
-                f"- You are powered by the underlying LLM model: {self.default_model} (developed by Alibaba Cloud).\n"
-                f"- If asked who created you or what application this is, answer clearly that this editor is Vieed created by vieexploit, and your AI engine model is {self.default_model} by Alibaba.\n\n"
+                f"- Model: {self.default_model} by Alibaba Cloud.\n"
+                f"- Answer politely, clearly, and concisely in Indonesian or English according to user input.\n\n"
                 f"Context code ({self.detected_lang}):\n```\n{code_context}\n```\n\n"
                 f"User question: {user_msg}\n"
-                f"Provide a helpful and concise answer in English. Wrap any code in markdown triple backticks."
+                f"Wrap code snippets in markdown triple backticks if any."
             )
             self.set_status("🤖 Thinking...")
 
