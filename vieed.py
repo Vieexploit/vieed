@@ -58,11 +58,12 @@ class ChatSidebar(Container):
     """Sidebar for the AI Q&A session based on the active code context."""
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]")
-        yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
+        with Horizontal(id="chat_header_row"):
+            yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]", id="chat_title")
+            yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
+            yield Button("📋 Copy", id="btn_copy_ai")
         with VerticalScroll(id="chat_scroll_area"):
             yield Markdown("", id="chat_response")
-        yield Button("📋 Copy last answer", id="btn_copy_ai")
         yield Input(placeholder="Ask something about this code...", id="chat_input")
 
 
@@ -154,13 +155,25 @@ class VieedEditor(App):
         margin: 1 0;
     }
 
+    #chat_header_row {
+        height: 3;
+    }
+
+    #chat_title {
+        width: 1fr;
+        content-align: left middle;
+    }
+
     #chat_hint {
+        width: 1fr;
         color: #666666;
+        content-align: left middle;
     }
 
     #btn_copy_ai {
-        width: 100%;
-        margin-top: 1;
+        width: 11;
+        min-width: 11;
+        height: 3;
         background: #00ffaf;
         color: #121212;
         border: none;
