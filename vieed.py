@@ -16,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import TextArea, Input, Static, Label, OptionList, Markdown
+from textual.widgets import TextArea, Input, Static, Label, OptionList, Button
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
@@ -37,12 +37,11 @@ class HelpScreen(ModalScreen):
             "• [bold yellow]Ctrl + T[/bold yellow]       : Toggle AI Chat Assistant Sidebar\n"
             "• [bold yellow]Ctrl + R[/bold yellow]       : Refresh / Reset AI & UI State\n"
             "• [bold yellow]Ctrl + P[/bold yellow]       : Switch Color Theme (Carbon, OLED, Slate)\n"
-            "• [bold yellow]Ctrl+Shift+C[/bold yellow]  : Copy Selected Text\n"
+            "• [bold yellow]Ctrl+Shift+C[/bold yellow]  : Copy Selected Text in Editor\n"
             "• [bold yellow]Ctrl+Shift+V[/bold yellow]  : Paste Clipboard Text\n"
             "• [bold yellow]Ctrl+Shift+X[/bold yellow]  : Cut Selected Text\n"
             "• [bold yellow]Tab[/bold yellow]           : Insert Indentation/Tab in Editor\n"
             "• [bold yellow]Ctrl + H[/bold yellow]       : Open This Help Dialog\n"
-            "• [bold yellow]Ctrl+Shift+A[/bold yellow]  : Copy Last AI Code/Answer\n"
             "• [bold yellow]Ctrl + Q[/bold yellow]       : Quit Vieed\n"
             "• [bold yellow]Esc[/bold yellow]          : Dismiss Active Panels / Popups\n\n"
             "[dim]Press ESC or Ctrl+H to close this dialog.[/dim]"
@@ -54,6 +53,59 @@ class HelpScreen(ModalScreen):
         self.app.pop_screen()
 
 
+class CodeBlockWidget(Container):
+    """Custom Widget for Code Blocks featuring a Copy button on the top-right."""
+
+    def __init__(self, code_text: str, lang: str = "code", **kwargs):
+        super().__init__(**kwargs)
+        self.code_text = code_text
+        self.lang = lang
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="code_block_header"):
+            yield Label(f"[dim]{self.lang}[/dim]", classes="code_block_lang")
+            yield Button("📋 Copy", id="btn_copy_block", classes="copy_code_btn")
+        yield Static(self.code_text, classes="code_block_content")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_copy_block":
+            self.app._set_clipboard(self.code_text)
+            event.button.label = "✅ Copied!"
+            self.set_timer(2.0, lambda: self._reset_button_label(event.button))
+            self.app.set_status("📋 Code block copied to clipboard!")
+
+    def _reset_button_label(self, button: Button) -> None:
+        button.label = "📋 Copy"
+
+
+class ChatMessageWidget(Container):
+    """Widget to render Chat Messages with embedded Code Blocks and Copy Buttons."""
+
+    def __init__(self, sender: str, text: str, **kwargs):
+        super().__init__(**kwargs)
+        self.sender = sender
+        self.text = text
+
+    def compose(self) -> ComposeResult:
+        is_ai = "Vieed AI" in self.sender
+        header_color = "cyan" if is_ai else "green"
+        yield Label(f"[{header_color}][bold]{self.sender}:[/bold][/{header_color}]", classes="msg_sender")
+
+        # Split regular text and code blocks (```lang ... ```)
+        parts = re.split(r"(```[a-zA-Z0-9+#-]*\n.*?```)", self.text, flags=re.DOTALL)
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith("```") and part.endswith("```"):
+                lines = part.strip().split("\n")
+                lang_match = lines[0].replace("```", "").strip()
+                lang = lang_match if lang_match else "code"
+                code_content = "\n".join(lines[1:-1])
+                yield CodeBlockWidget(code_text=code_content, lang=lang)
+            else:
+                yield Static(part.strip(), classes="msg_text")
+
+
 class ChatSidebar(Container):
     """Sidebar for the AI Q&A session based on the active code context."""
 
@@ -62,7 +114,7 @@ class ChatSidebar(Container):
             yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]", id="chat_title")
             yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
         with VerticalScroll(id="chat_scroll_area"):
-            yield Markdown("", id="chat_response")
+            pass
         yield Input(placeholder="Ask something about this code...", id="chat_input")
 
 
@@ -135,7 +187,7 @@ class VieedEditor(App):
     }
 
     #chat_sidebar {
-        width: 45;
+        width: 48;
         height: 100%;
         border-left: solid #333333;
         background: #141414;
@@ -149,13 +201,13 @@ class VieedEditor(App):
 
     #chat_scroll_area {
         height: 1fr;
-        border: solid #333333;
+        border: solid #2a2a2a;
         padding: 1;
         margin: 1 0;
     }
 
     #chat_header_row {
-        height: 2;
+        height: 1;
         margin-bottom: 1;
     }
 
@@ -168,6 +220,58 @@ class VieedEditor(App):
         width: auto;
         color: #666666;
         content-align: right middle;
+    }
+
+    /* Message & Code Block Styles */
+    ChatMessageWidget {
+        margin-bottom: 1;
+        height: auto;
+    }
+
+    .msg_sender {
+        margin-bottom: 0;
+    }
+
+    .msg_text {
+        color: #cccccc;
+        margin-bottom: 1;
+    }
+
+    CodeBlockWidget {
+        background: #0d0d0d;
+        border: solid #333333;
+        margin: 1 0;
+        height: auto;
+    }
+
+    .code_block_header {
+        height: 1;
+        background: #1e1e1e;
+        padding: 0 1;
+    }
+
+    .code_block_lang {
+        width: 1fr;
+        content-align: left middle;
+    }
+
+    .copy_code_btn {
+        width: auto;
+        height: 1;
+        min-width: 8;
+        border: none;
+        background: #2a2a2a;
+        color: #00ffaf;
+    }
+
+    .copy_code_btn:hover {
+        background: #00ffaf;
+        color: #000000;
+    }
+
+    .code_block_content {
+        padding: 1;
+        color: #00ffaf;
     }
 
     #help_dialog {
@@ -193,7 +297,6 @@ class VieedEditor(App):
         Binding("ctrl+shift+c", "copy_text", "Copy", show=False),
         Binding("ctrl+shift+v", "paste_text", "Paste", show=False),
         Binding("ctrl+shift+x", "cut_text", "Cut", show=False),
-        Binding("ctrl+shift+a", "copy_last_ai", "Copy AI Code", show=False),
         Binding("escape", "dismiss_panels", "Dismiss", show=False),
     ]
 
@@ -209,7 +312,6 @@ class VieedEditor(App):
         self.detected_lang = "Plain Text"
         self.theme_keys = list(self.THEMES.keys())
         self.current_theme_index = 0
-        self._chat_log: list[str] = []
         self._ai_task: asyncio.Task = None
         self.internal_clipboard = ""
         self.ollama_url = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -225,7 +327,7 @@ class VieedEditor(App):
                     yield OptionList(id="completion_popup")
                     yield Input(placeholder="Search text... (Enter: next, Esc: close)", id="search_bar")
                 yield ChatSidebar(id="chat_sidebar")
-            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat | Ctrl+Shift+A: Copy AI Code", id="status_bar")
+            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat", id="status_bar")
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -294,7 +396,7 @@ class VieedEditor(App):
             editor.insert(pasted_text)
             self.set_status("📌 Text pasted from clipboard.")
         else:
-            self.set_status("⚠️ Clipboard is empty (install pyperclip for OS clipboard).")
+            self.set_status("⚠️ Clipboard is empty.")
 
     def detect_language(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -488,20 +590,15 @@ class VieedEditor(App):
         if not chat_sidebar.has_class("visible"):
             chat_sidebar.add_class("visible")
 
-        user_prompt_log = f"**You (Bug Check):**\nCheck this snippet:\n```\n{selected_text}\n```"
-        self._chat_log.append(user_prompt_log)
-
-        chat_box = self.query_one("#chat_response", Markdown)
-        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        chat_box.update("\n\n---\n\n".join(self._chat_log))
-        chat_scroll.scroll_end(animate=False)
+        user_prompt_log = f"Check this snippet for bugs:\n```\n{selected_text}\n```"
+        self._add_chat_message("You (Bug Check)", user_prompt_log)
 
         system_instruction = (
             f"Your Identity:\n"
             f"- You are 'Vieed AI', an embedded AI assistant inside Vieed (a smart offline TUI text editor created by vieexploit).\n"
             f"- You are powered by {self.default_model} developed by Alibaba Cloud.\n\n"
             f"Review this {self.detected_lang} snippet for bugs or potential issues. "
-            f"Be concise, point out exact problems, and show fixed code:\n\n{selected_text}"
+            f"Be concise, point out exact problems, and provide fixed code using markdown blocks (```): \n\n{selected_text}"
         )
 
         if self._ai_task and not self._ai_task.done():
@@ -512,13 +609,14 @@ class VieedEditor(App):
         )
 
     def _handle_ai_analysis(self, response_text: str) -> None:
-        chat_box = self.query_one("#chat_response", Markdown)
-        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
+        self._add_chat_message("Vieed AI (Bug Analysis)", response_text)
+        self.set_status("✨ AI Analysis complete.")
 
-        self._chat_log.append(f"**Vieed AI (Bug Analysis):**\n{response_text}")
-        chat_box.update("\n\n---\n\n".join(self._chat_log))
+    def _add_chat_message(self, sender: str, text: str) -> None:
+        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
+        msg_widget = ChatMessageWidget(sender=sender, text=text)
+        chat_scroll.mount(msg_widget)
         chat_scroll.scroll_end(animate=False)
-        self.set_status("✨ AI Analysis complete. Press Ctrl+Shift+A to copy code.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_bar":
@@ -539,13 +637,9 @@ class VieedEditor(App):
                 return
 
             event.input.value = ""
-            chat_box = self.query_one("#chat_response", Markdown)
-            chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
             editor = self.query_one("#editor_area", TextArea)
 
-            self._chat_log.append(f"**You:** {user_msg}")
-            chat_box.update("\n\n---\n\n".join(self._chat_log))
-            chat_scroll.scroll_end(animate=False)
+            self._add_chat_message("You", user_msg)
 
             code_context = editor.text[:self.max_context_chars]
             prompt = (
@@ -555,7 +649,7 @@ class VieedEditor(App):
                 f"- If asked who created you or what application this is, answer clearly that this editor is Vieed created by vieexploit, and your AI engine model is {self.default_model} by Alibaba.\n\n"
                 f"Context code ({self.detected_lang}):\n```\n{code_context}\n```\n\n"
                 f"User question: {user_msg}\n"
-                f"Provide a helpful and concise answer in English."
+                f"Provide a helpful and concise answer in English. Wrap any code in markdown triple backticks."
             )
             self.set_status("🤖 Thinking...")
 
@@ -567,29 +661,8 @@ class VieedEditor(App):
             )
 
     def _handle_chat_response(self, response_text: str) -> None:
-        chat_box = self.query_one("#chat_response", Markdown)
-        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
-        self._chat_log.append(f"**Vieed AI:**\n{response_text}")
-        chat_box.update("\n\n---\n\n".join(self._chat_log))
-        chat_scroll.scroll_end(animate=False)
-        self.set_status("Ready. Press Ctrl+Shift+A to copy AI code.")
-
-    def action_copy_last_ai(self) -> None:
-        """Copy the last AI code block or answer directly to clipboard."""
-        entry = next((e for e in reversed(self._chat_log) if e.startswith("**Vieed AI")), None)
-        if not entry:
-            self.set_status("⚠️ No AI answer to copy yet.")
-            return
-
-        text = re.sub(r"^\*\*Vieed AI[^*]*:\*\*\s*", "", entry)
-        code_blocks = re.findall(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*?)```", text, flags=re.DOTALL)
-        if code_blocks:
-            text = "\n\n".join(block.strip("\n") for block in code_blocks)
-        else:
-            text = text.replace("**", "")
-
-        self._set_clipboard(text)
-        self.set_status("📋 AI code copied to clipboard!")
+        self._add_chat_message("Vieed AI", response_text)
+        self.set_status("Ready.")
 
     async def _query_ollama_async(self, prompt: str, callback=None) -> None:
         """Fully asynchronous Ollama request to prevent freezing the TUI event loop."""
