@@ -11,13 +11,14 @@ import sys
 import httpx
 import asyncio
 
-from pygments.lexers import get_lexer_for_filename, guess_lexer, ClassNotFound
+from pygments.lexers import get_lexer_for_filename, guess_lexer, get_lexer_by_name, ClassNotFound
 from rich.markup import escape
+from rich.syntax import Syntax
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import TextArea, Input, Static, Label, OptionList, Button
+from textual.widgets import TextArea, Input, Static, Label, OptionList, Button, Markdown
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
@@ -34,14 +35,15 @@ class HelpScreen(ModalScreen):
             "• [bold yellow]Ctrl + S[/bold yellow]       : Save File\n"
             "• [bold yellow]Ctrl + F[/bold yellow]       : Search Text (Enter: Next, Esc: Close)\n"
             "• [bold yellow]Ctrl + Space[/bold yellow]   : Trigger Autocomplete Suggestion\n"
-            "• [bold yellow]Ctrl + B[/bold yellow]       : AI Bug/Error Code Analysis\n"
+            "• [bold yellow]Ctrl+Shift+A[/bold yellow] : AI Bug/Error Code Analysis\n"
+            "• [bold yellow]Ctrl+Shift+F[/bold yellow] : Format / Auto-Indent Code\n"
             "• [bold yellow]Ctrl + T[/bold yellow]       : Toggle AI Chat Assistant Sidebar\n"
+            "• [bold yellow]Ctrl + Y[/bold yellow]       : Copy AI Fix Code to Clipboard\n"
             "• [bold yellow]Ctrl + R[/bold yellow]       : Refresh / Reset AI & UI State\n"
-            "• [bold yellow]Ctrl + P[/bold yellow]       : Switch Color Theme (Carbon, OLED, Slate)\n"
-            "• [bold yellow]Ctrl+Shift+C[/bold yellow]  : Copy Selected Text in Editor\n"
-            "• [bold yellow]Ctrl+Shift+V[/bold yellow]  : Paste Clipboard Text\n"
-            "• [bold yellow]Ctrl+Shift+X[/bold yellow]  : Cut Selected Text\n"
-            "• [bold yellow]Tab[/bold yellow]           : Insert Indentation/Tab in Editor\n"
+            "• [bold yellow]Ctrl+Shift+C[/bold yellow] : Copy Selected Text in Editor\n"
+            "• [bold yellow]Ctrl+Shift+V[/bold yellow] : Paste Clipboard Text\n"
+            "• [bold yellow]Ctrl+Shift+X[/bold yellow] : Cut Selected Text\n"
+            "• [bold yellow]Tab[/bold yellow]          : Insert Indentation/Tab in Editor\n"
             "• [bold yellow]Ctrl + H[/bold yellow]       : Open This Help Dialog\n"
             "• [bold yellow]Ctrl + Q[/bold yellow]       : Quit Vieed\n"
             "• [bold yellow]Esc[/bold yellow]          : Dismiss Active Panels / Popups\n\n"
@@ -54,33 +56,54 @@ class HelpScreen(ModalScreen):
         self.app.pop_screen()
 
 
-class CodeBlockWidget(Container):
-    """Custom Widget for Code Blocks featuring a Copy button on the top-right."""
+class CodeBlockWithCopy(Container):
+    """Fenced code block with a dedicated copy button pinned at the bottom-right corner."""
 
-    def __init__(self, code_text: str, lang: str = "code", **kwargs):
+    def __init__(self, code: str, language: str = "", **kwargs):
         super().__init__(**kwargs)
-        self.code_text = code_text
-        self.lang = lang
+        self.code = code
+        self.language = language.strip().lower()
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="code_block_header"):
-            yield Label(f"[dim]{escape(self.lang)}[/dim]", classes="code_block_lang")
-            yield Button("📋 Copy", id="btn_copy_block", classes="copy_code_btn")
-        yield Static(self.code_text, classes="code_block_content")
+        lexer = None
+        if self.language:
+            try:
+                lexer = get_lexer_by_name(self.language)
+            except ClassNotFound:
+                lexer = None
+        syntax = Syntax(
+            self.code,
+            lexer or "text",
+            theme="ansi_dark",
+            word_wrap=True,
+        )
+        with Vertical(classes="code_block_wrapper"):
+            yield Static(syntax, classes="code_block_content", markup=False)
+            with Horizontal(classes="code_block_footer"):
+                yield Button("📋 Copy Code", classes="copy_code_btn")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_copy_block":
-            self.app._set_clipboard(self.code_text)
-            event.button.label = "✅ Copied!"
-            self.set_timer(2.0, lambda: self._reset_button_label(event.button))
-            self.app.set_status("📋 Code block copied to clipboard!")
+        """Copy the block's code to the clipboard when its button is clicked."""
+        if not event.button.has_class("copy_code_btn"):
+            return
+        event.stop()
+        app = self.app
+        app._set_clipboard(self.code)
+        app.set_status("📋 Code copied to clipboard.")
+        event.button.label = "✅ Copied!"
+        self.set_timer(1.5, self._reset_button_label)
 
-    def _reset_button_label(self, button: Button) -> None:
-        button.label = "📋 Copy"
+    def _reset_button_label(self) -> None:
+        try:
+            self.query_one(".copy_code_btn", Button).label = "📋 Copy Code"
+        except Exception:
+            pass
 
 
 class ChatMessageWidget(Container):
-    """Widget to render Chat Messages with embedded Code Blocks and Copy Buttons."""
+    """Widget to render Chat Messages safely using Textual's native Markdown widget."""
+
+    CODE_BLOCK_PATTERN = re.compile(r"```([a-zA-Z0-9+#._-]*)\n(.*?)\n?```", re.DOTALL)
 
     def __init__(self, sender: str, text: str, **kwargs):
         super().__init__(**kwargs)
@@ -91,21 +114,24 @@ class ChatMessageWidget(Container):
         is_ai = "Vieed AI" in self.sender
         header_color = "cyan" if is_ai else "green"
         safe_sender = escape(self.sender)
-        yield Label(f"[{header_color}][bold]{safe_sender}:[/bold][/{header_color}]", classes="msg_sender")
 
-        # Split regular text and code blocks (```lang ... ```)
-        parts = re.split(r"(```[a-zA-Z0-9+#-]*\n.*?```)", self.text, flags=re.DOTALL)
-        for part in parts:
-            if not part:
-                continue
-            if part.startswith("```") and part.endswith("```"):
-                lines = part.strip().split("\n")
-                lang_match = lines[0].replace("```", "").strip()
-                lang = lang_match if lang_match else "code"
-                code_content = "\n".join(lines[1:-1])
-                yield CodeBlockWidget(code_text=code_content, lang=lang)
-            else:
-                yield Static(escape(part.strip()), classes="msg_text")
+        yield Label(f"[{header_color}][bold]{safe_sender}:[/bold][/{header_color}]", classes="msg_sender")
+        last_end = 0
+        found_block = False
+        for match in self.CODE_BLOCK_PATTERN.finditer(self.text):
+            found_block = True
+            before = self.text[last_end:match.start()].strip()
+            if before:
+                yield Markdown(before, classes="msg_markdown")
+            yield CodeBlockWithCopy(code=match.group(2), language=match.group(1))
+            last_end = match.end()
+
+        if not found_block:
+            yield Markdown(self.text, classes="msg_markdown")
+        else:
+            remainder = self.text[last_end:].strip()
+            if remainder:
+                yield Markdown(remainder, classes="msg_markdown")
 
 
 class ChatSidebar(Container):
@@ -121,28 +147,26 @@ class ChatSidebar(Container):
 
 
 class VieedEditor(App):
-    """Main Vieed TUI Editor app with monochrome themes & autocomplete."""
+    """Main Vieed TUI Editor app with full-screen TTY compatibility."""
 
     CSS = """
     Screen {
         align: center middle;
-        background: #121212;
-        color: #e0e0e0;
+        background: default;
+        color: white;
     }
 
     #viewport_container {
         width: 100%;
-        max-width: 160;
         height: 100%;
-        max-height: 50;
-        border: round #333333;
-        background: #181818;
+        border: solid green;
+        background: default;
     }
 
     #header_bar {
         height: 1;
-        background: #222222;
-        color: #00ffaf;
+        background: green;
+        color: black;
         content-align: center middle;
         text-style: bold;
     }
@@ -154,13 +178,13 @@ class VieedEditor(App):
     #editor_area {
         height: 1fr;
         border: none;
-        background: #181818;
+        background: default;
     }
 
     #status_bar {
         height: 1;
-        background: #262626;
-        color: #888888;
+        background: blue;
+        color: white;
         padding: 0 1;
     }
 
@@ -168,8 +192,8 @@ class VieedEditor(App):
         dock: bottom;
         height: 3;
         display: none;
-        background: #1f1f1f;
-        border-top: solid #00ffaf;
+        background: default;
+        border-top: heavy yellow;
     }
 
     #search_bar.visible {
@@ -180,8 +204,8 @@ class VieedEditor(App):
         dock: bottom;
         height: 6;
         display: none;
-        background: #222222;
-        border: solid #00ffaf;
+        background: black;
+        border: heavy cyan;
     }
 
     #completion_popup.visible {
@@ -191,8 +215,8 @@ class VieedEditor(App):
     #chat_sidebar {
         width: 48;
         height: 100%;
-        border-left: solid #333333;
-        background: #141414;
+        border-left: solid green;
+        background: default;
         display: none;
         padding: 1;
     }
@@ -203,7 +227,7 @@ class VieedEditor(App):
 
     #chat_scroll_area {
         height: 1fr;
-        border: solid #2a2a2a;
+        border: solid white;
         padding: 1;
         margin: 1 0;
     }
@@ -220,11 +244,11 @@ class VieedEditor(App):
 
     #chat_hint {
         width: auto;
-        color: #666666;
+        color: yellow;
         content-align: right middle;
     }
 
-    /* Message & Code Block Styles */
+    /* Chat Messages & Native Markdown Styling */
     ChatMessageWidget {
         margin-bottom: 1;
         height: auto;
@@ -234,53 +258,66 @@ class VieedEditor(App):
         margin-bottom: 0;
     }
 
-    .msg_text {
-        color: #cccccc;
-        margin-bottom: 1;
-    }
-
-    CodeBlockWidget {
-        background: #0d0d0d;
-        border: solid #333333;
-        margin: 1 0;
+    .msg_markdown {
+        background: transparent;
+        padding: 0;
+        margin: 0;
         height: auto;
     }
 
-    .code_block_header {
-        height: 1;
-        background: #1e1e1e;
-        padding: 0 1;
+    .msg_markdown CodeBlock {
+        background: default;
+        border: ascii yellow;
+        margin: 1 0;
+        padding: 1;
     }
 
-    .code_block_lang {
-        width: 1fr;
-        content-align: left middle;
+    /* Fenced code blocks with dedicated copy button */
+    CodeBlockWithCopy {
+        height: auto;
+        margin: 1 0;
+        border: ascii yellow;
+        background: default;
     }
 
-    .copy_code_btn {
-        width: auto;
-        height: 1;
-        min-width: 8;
-        border: none;
-        background: #2a2a2a;
-        color: #00ffaf;
-    }
-
-    .copy_code_btn:hover {
-        background: #00ffaf;
-        color: #000000;
+    .code_block_wrapper {
+        height: auto;
     }
 
     .code_block_content {
-        padding: 1;
-        color: #00ffaf;
+        height: auto;
+        padding: 1 1 0 1;
+    }
+
+    .code_block_footer {
+        height: 1;
+        align-horizontal: right;
+        padding: 0 1;
+    }
+
+    .copy_code_btn {
+        height: 1;
+        min-width: 14;
+        border: none;
+        background: cyan;
+        color: black;
+        text-style: bold;
+    }
+
+    .copy_code_btn:hover {
+        background: white;
+        color: black;
+    }
+
+    .copy_code_btn:focus {
+        text-style: bold reverse;
     }
 
     #help_dialog {
         padding: 2;
-        background: #1c1c1c;
-        border: thick #00ffaf;
-        width: 60;
+        background: black;
+        border: thick cyan;
+        width: 64;
         height: auto;
         align: center middle;
     }
@@ -288,10 +325,11 @@ class VieedEditor(App):
 
     BINDINGS = [
         Binding("ctrl+f", "toggle_search", "Search", show=True),
-        Binding("ctrl+b", "analyze_error", "AI Bug Check", show=True),
+        Binding("ctrl+shift+a", "analyze_error", "AI Bug Check", show=True),
+        Binding("ctrl+shift+f", "format_code", "Format Code", show=True),
         Binding("ctrl+t", "toggle_chat", "AI Chat", show=True),
+        Binding("ctrl+y", "copy_ai_fix", "Copy AI Fix", show=False),
         Binding("ctrl+r", "refresh_app", "Refresh UI/AI", show=True),
-        Binding("ctrl+p", "cycle_theme", "Switch Theme", show=True),
         Binding("ctrl+h", "show_help", "Help", show=True),
         Binding("ctrl+space", "trigger_autocomplete", "Autocomplete", show=True),
         Binding("ctrl+s", "save_file", "Save", show=True),
@@ -302,18 +340,10 @@ class VieedEditor(App):
         Binding("escape", "dismiss_panels", "Dismiss", show=False),
     ]
 
-    THEMES = {
-        "carbon": {"name": "Carbon", "bg": "#121212", "editor_bg": "#181818", "header_bg": "#222222", "border": "#333333", "accent": "#00ffaf"},
-        "oled": {"name": "Pure OLED Monochrome", "bg": "#000000", "editor_bg": "#000000", "header_bg": "#111111", "border": "#222222", "accent": "#ffffff"},
-        "slate": {"name": "Slate Gray", "bg": "#1a1c23", "editor_bg": "#212431", "header_bg": "#2d3142", "border": "#4f5d75", "accent": "#ffffff"},
-    }
-
     def __init__(self, filename: str = None):
         super().__init__()
         self.filename = filename or "Untitled"
         self.detected_lang = "Plain Text"
-        self.theme_keys = list(self.THEMES.keys())
-        self.current_theme_index = 0
         self._ai_task: asyncio.Task = None
         self.last_ai_fix_code: str = ""
         self.internal_clipboard = ""
@@ -330,7 +360,7 @@ class VieedEditor(App):
                     yield OptionList(id="completion_popup")
                     yield Input(placeholder="Search text... (Enter: next, Esc: close)", id="search_bar")
                 yield ChatSidebar(id="chat_sidebar")
-            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat", id="status_bar")
+            yield Static(" Ready | Ctrl+H: Help | Ctrl+Shift+A: Bug Check | Ctrl+T: AI Chat", id="status_bar")
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -343,7 +373,6 @@ class VieedEditor(App):
                 self.notify(f"Failed to read file: {e}", severity="error")
 
         self.detect_language()
-        self.apply_theme(self.theme_keys[self.current_theme_index])
 
     def _set_clipboard(self, text: str) -> None:
         """Helper method to copy text to system clipboard or fallback internally."""
@@ -351,8 +380,27 @@ class VieedEditor(App):
         try:
             import pyperclip
             pyperclip.copy(text)
-        except ImportError:
+        except Exception:
             pass
+
+    def action_copy_ai_fix(self) -> None:
+        """Shortcut action (Ctrl+Y) to quickly copy the latest AI generated fix."""
+        if self.last_ai_fix_code:
+            self._set_clipboard(self.last_ai_fix_code)
+            self.set_status("📋 AI Fix code copied to clipboard.")
+        else:
+            self.set_status("⚠️ No AI fix code available yet.")
+
+    def action_format_code(self) -> None:
+        """Standard relevant action replacing F6: Trim trailing spaces and clean code lines."""
+        editor = self.query_one("#editor_area", TextArea)
+        lines = editor.text.splitlines()
+        formatted = "\n".join(line.rstrip() for line in lines)
+        if editor.text != formatted:
+            editor.text = formatted
+            self.set_status("✨ Code formatted (trimmed trailing whitespaces).")
+        else:
+            self.set_status("✨ Code is already clean.")
 
     def action_refresh_app(self) -> None:
         """Cancel any active AI task and refresh the UI."""
@@ -389,11 +437,8 @@ class VieedEditor(App):
         try:
             import pyperclip
             pasted_text = pyperclip.paste()
-        except ImportError:
+        except Exception:
             pasted_text = self.internal_clipboard or None
-        except Exception as e:
-            self.set_status(f"❌ Failed to read clipboard: {e}")
-            return
 
         if pasted_text:
             editor.insert(pasted_text)
@@ -415,32 +460,10 @@ class VieedEditor(App):
         self.update_header()
 
     def update_header(self) -> None:
-        theme_name = self.THEMES[self.theme_keys[self.current_theme_index]]["name"]
         header = self.query_one("#header_bar", Static)
         header.update(
-            f"Vieed | Author: vieexploit | File: {self.filename} | "
-            f"Lang: {self.detected_lang} | Theme: {theme_name}"
+            f"Vieed | Author: vieexploit | File: {self.filename} | Lang: {self.detected_lang}"
         )
-
-    def action_cycle_theme(self) -> None:
-        self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_keys)
-        selected_key = self.theme_keys[self.current_theme_index]
-        self.apply_theme(selected_key)
-        self.set_status(f"🎨 Color scheme switched to: {self.THEMES[selected_key]['name']}")
-
-    def apply_theme(self, theme_key: str) -> None:
-        t = self.THEMES[theme_key]
-        container = self.query_one("#viewport_container")
-        header = self.query_one("#header_bar")
-        editor = self.query_one("#editor_area")
-
-        self.screen.styles.background = t["bg"]
-        container.styles.background = t["editor_bg"]
-        container.styles.border = ("round", t["border"])
-        header.styles.background = t["header_bg"]
-        header.styles.color = t["accent"]
-        editor.styles.background = t["editor_bg"]
-        self.update_header()
 
     @staticmethod
     def _offset_for_location(text: str, location: tuple[int, int]) -> int:
@@ -600,14 +623,31 @@ class VieedEditor(App):
             f"Your Identity:\n"
             f"- You are 'Vieed AI', an embedded AI assistant inside Vieed (a smart offline TUI text editor created by vieexploit).\n"
             f"- Model: {self.default_model}.\n\n"
-            f"Task: Inspect the following {self.detected_lang} code.\n"
-            f"IMPORTANT RULES:\n"
-            f"1. First, check if the code is ALREADY correct and contains NO major bugs or syntax errors.\n"
-            f"2. If the code is GOOD and error-free (or if it matches a previous fix), explicitly state: '✅ Kode sudah benar / tidak ditemukan bug!'.\n"
-            f"3. Do NOT make up fake bugs or fight over minor style preferences if the code works.\n"
-            f"4. If the code is good, politely ask the user if they want to add new features or if that's all they need (e.g., 'Apakah ada fitur tambahan yang ingin dibuat, atau kodenya sudah sesuai?').\n"
-            f"5. ONLY if there are ACTUAL syntax/logic errors, explain them clearly and provide the corrected code wrapped in markdown block (```).\n\n"
-            f"Code snippet to check:\n{selected_text}"
+            f"TASK: Rigorous bug analysis of the following {self.detected_lang} code.\n"
+            f"The user believes this code has bugs. Your job is to VERIFY WITH EVIDENCE. Do not be agreeable, do not rush to a verdict.\n\n"
+            f"MANDATORY WORKFLOW - execute ALL steps in this exact order and WRITE OUT each step:\n\n"
+            f"STEP 1 - SYNTAX / COMPILER CHECK:\n"
+            f"Read the code as a strict {self.detected_lang} compiler would. Quote every line that is syntactically invalid and say why. A syntax error anywhere means the program does not even compile. NEVER skip this step.\n\n"
+            f"STEP 2 - RUNTIME BUG CHECKLIST. For EACH letter below, write one line: PASS or FAIL, with the exact code fragment as evidence:\n"
+            f"a) Constructor/initialization: is every member variable actually assigned? Watch for parameter shadowing, e.g. `id = id;` assigns NOTHING and leaves garbage values.\n"
+            f"b) Loop bounds: can any index reach .size()/.length() (off-by-one, `<=` instead of `<`)? Out-of-bounds means crash or undefined behavior.\n"
+            f"c) Pointer/null safety: is any pointer - including function return values that may be nullptr - dereferenced without a null check?\n"
+            f"d) Branch structure: is every if/else if/else chain legal? An `else` followed by a condition is a SYNTAX ERROR.\n"
+            f"e) Logic: uninitialized variables, wrong comparisons, edge cases that misbehave.\n\n"
+            f"STEP 3 - VERDICT (only AFTER Steps 1-2 are fully written out):\n"
+            f"- If and ONLY if every single item is PASS, output exactly: '✅ Kode sudah benar / tidak ditemukan bug!' and ask if the user wants new features.\n"
+            f"- If ANY item is FAIL, then for EACH bug output in EXACTLY this format:\n"
+            f"  [BUG] <short title>\n"
+            f"  Lokasi: <quote the faulty line>\n"
+            f"  Masalah: <what is wrong + what happens at runtime: crash / wrong output / undefined behavior>\n"
+            f"  Perbaikan: <the correct approach in one sentence>\n\n"
+            f"STEP 4 - FIXED CODE: only AFTER all explanations above, give the COMPLETE corrected file in ONE markdown code block. Explanations FIRST, code block LAST. Dumping raw code with no explanation is forbidden.\n\n"
+            f"HARD RULES:\n"
+            f"- Do NOT deny real bugs to seem agreeable. Do NOT invent fake bugs. Evidence only.\n"
+            f"- Never output the verdict before the checklist.\n"
+            f"- Answer in Indonesian.\n\n"
+            f"Code to analyze:\n"
+            f"```\n{selected_text}\n```"
         )
 
         if self._ai_task and not self._ai_task.done():
@@ -623,10 +663,13 @@ class VieedEditor(App):
             self.last_ai_fix_code = code_blocks[-1].strip()
 
         self._add_chat_message("Vieed AI (Bug Check)", response_text)
-        self.set_status("✨ AI Analysis complete.")
+        self.set_status("✨ AI Analysis complete. Press Ctrl+Y to copy fix code.")
 
     def _add_chat_message(self, sender: str, text: str) -> None:
-        chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
+        try:
+            chat_scroll = self.query_one("#chat_scroll_area", VerticalScroll)
+        except Exception:
+            return
         msg_widget = ChatMessageWidget(sender=sender, text=text)
         chat_scroll.mount(msg_widget)
         chat_scroll.scroll_end(animate=False)
@@ -685,6 +728,7 @@ class VieedEditor(App):
                 "model": self.default_model,
                 "prompt": prompt,
                 "stream": False,
+                "options": {"temperature": 0.2},
             }
             async with httpx.AsyncClient(timeout=120.0) as client:
                 res = await client.post(self.ollama_url, json=payload)
