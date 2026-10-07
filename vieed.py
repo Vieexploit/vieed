@@ -152,7 +152,7 @@ class VieedEditor(App):
     CSS = """
     Screen {
         align: center middle;
-        background: default;
+        background: transparent;
         color: white;
     }
 
@@ -160,7 +160,7 @@ class VieedEditor(App):
         width: 100%;
         height: 100%;
         border: solid green;
-        background: default;
+        background: transparent;
     }
 
     #header_bar {
@@ -178,7 +178,7 @@ class VieedEditor(App):
     #editor_area {
         height: 1fr;
         border: none;
-        background: default;
+        background: transparent;
     }
 
     #status_bar {
@@ -192,7 +192,7 @@ class VieedEditor(App):
         dock: bottom;
         height: 3;
         display: none;
-        background: default;
+        background: transparent;
         border-top: heavy yellow;
     }
 
@@ -216,7 +216,7 @@ class VieedEditor(App):
         width: 48;
         height: 100%;
         border-left: solid green;
-        background: default;
+        background: transparent;
         display: none;
         padding: 1;
     }
@@ -266,7 +266,7 @@ class VieedEditor(App):
     }
 
     .msg_markdown CodeBlock {
-        background: default;
+        background: transparent;
         border: ascii yellow;
         margin: 1 0;
         padding: 1;
@@ -277,7 +277,7 @@ class VieedEditor(App):
         height: auto;
         margin: 1 0;
         border: ascii yellow;
-        background: default;
+        background: transparent;
     }
 
     .code_block_wrapper {
