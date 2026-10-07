@@ -16,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import TextArea, Input, Static, Label, OptionList, Markdown, Button
+from textual.widgets import TextArea, Input, Static, Label, OptionList, Markdown
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
@@ -42,7 +42,7 @@ class HelpScreen(ModalScreen):
             "• [bold yellow]Ctrl+Shift+X[/bold yellow]  : Cut Selected Text\n"
             "• [bold yellow]Tab[/bold yellow]           : Insert Indentation/Tab in Editor\n"
             "• [bold yellow]Ctrl + H[/bold yellow]       : Open This Help Dialog\n"
-            "• [bold yellow]Ctrl+Shift+A[/bold yellow]  : Copy Last AI Answer (or the 📋 button)\n"
+            "• [bold yellow]Ctrl+Shift+A[/bold yellow]  : Copy Last AI Code/Answer\n"
             "• [bold yellow]Ctrl + Q[/bold yellow]       : Quit Vieed\n"
             "• [bold yellow]Esc[/bold yellow]          : Dismiss Active Panels / Popups\n\n"
             "[dim]Press ESC or Ctrl+H to close this dialog.[/dim]"
@@ -61,7 +61,6 @@ class ChatSidebar(Container):
         with Horizontal(id="chat_header_row"):
             yield Label("[bold cyan]🤖 Vieed AI Assistant[/bold cyan]", id="chat_title")
             yield Static("Press [bold]Ctrl+T[/bold] to close.", id="chat_hint")
-            yield Button("📋 Copy", id="btn_copy_ai")
         with VerticalScroll(id="chat_scroll_area"):
             yield Markdown("", id="chat_response")
         yield Input(placeholder="Ask something about this code...", id="chat_input")
@@ -156,7 +155,8 @@ class VieedEditor(App):
     }
 
     #chat_header_row {
-        height: 3;
+        height: 2;
+        margin-bottom: 1;
     }
 
     #chat_title {
@@ -165,18 +165,9 @@ class VieedEditor(App):
     }
 
     #chat_hint {
-        width: 1fr;
+        width: auto;
         color: #666666;
-        content-align: left middle;
-    }
-
-    #btn_copy_ai {
-        width: 11;
-        min-width: 11;
-        height: 3;
-        background: #00ffaf;
-        color: #121212;
-        border: none;
+        content-align: right middle;
     }
 
     #help_dialog {
@@ -202,7 +193,7 @@ class VieedEditor(App):
         Binding("ctrl+shift+c", "copy_text", "Copy", show=False),
         Binding("ctrl+shift+v", "paste_text", "Paste", show=False),
         Binding("ctrl+shift+x", "cut_text", "Cut", show=False),
-        Binding("ctrl+shift+a", "copy_last_ai", "Copy AI Answer", show=False),
+        Binding("ctrl+shift+a", "copy_last_ai", "Copy AI Code", show=False),
         Binding("escape", "dismiss_panels", "Dismiss", show=False),
     ]
 
@@ -220,6 +211,7 @@ class VieedEditor(App):
         self.current_theme_index = 0
         self._chat_log: list[str] = []
         self._ai_task: asyncio.Task = None
+        self.internal_clipboard = ""
         self.ollama_url = os.environ.get("VIEED_OLLAMA_URL", "http://localhost:11434/api/generate")
         self.default_model = os.environ.get("VIEED_MODEL", "qwen2.5-coder:1.5b")
         self.max_context_chars = 8000
@@ -233,7 +225,7 @@ class VieedEditor(App):
                     yield OptionList(id="completion_popup")
                     yield Input(placeholder="Search text... (Enter: next, Esc: close)", id="search_bar")
                 yield ChatSidebar(id="chat_sidebar")
-            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat", id="status_bar")
+            yield Static(" Ready | Ctrl+H: Help | Ctrl+R: Refresh | Ctrl+T: AI Chat | Ctrl+Shift+A: Copy AI Code", id="status_bar")
 
     def on_mount(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
@@ -247,6 +239,15 @@ class VieedEditor(App):
 
         self.detect_language()
         self.apply_theme(self.theme_keys[self.current_theme_index])
+
+    def _set_clipboard(self, text: str) -> None:
+        """Helper method to copy text to system clipboard or fallback internally."""
+        self.internal_clipboard = text
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+        except ImportError:
+            pass
 
     def action_refresh_app(self) -> None:
         """Cancel any active AI task and refresh the UI."""
@@ -266,25 +267,25 @@ class VieedEditor(App):
     def action_copy_text(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
         if editor.selected_text:
-            self.copy_to_clipboard(editor.selected_text)
+            self._set_clipboard(editor.selected_text)
             self.set_status("📋 Text copied to clipboard.")
 
     def action_cut_text(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
         if editor.selected_text:
-            self.copy_to_clipboard(editor.selected_text)
-            editor.replace("", editor.selection.start, editor.selection.end)
+            self._set_clipboard(editor.selected_text)
+            start, end = editor.selection.start, editor.selection.end
+            editor.replace("", start, end)
             self.set_status("✂️ Text cut to clipboard.")
 
     def action_paste_text(self) -> None:
         editor = self.query_one("#editor_area", TextArea)
         pasted_text = None
         try:
-            import pyperclip  # optional: real OS clipboard (needs xclip/xsel on Linux)
+            import pyperclip
             pasted_text = pyperclip.paste()
         except ImportError:
-            # Fallback: Textual's in-app clipboard (only text copied via this app)
-            pasted_text = self.clipboard or None
+            pasted_text = self.internal_clipboard or None
         except Exception as e:
             self.set_status(f"❌ Failed to read clipboard: {e}")
             return
@@ -393,7 +394,7 @@ class VieedEditor(App):
         popup = self.query_one("#completion_popup", OptionList)
 
         cursor = editor.cursor_location
-        lines = editor.text.splitlines()
+        lines = editor.text.split("\n")
         if not lines or cursor[0] >= len(lines):
             return
 
@@ -427,7 +428,7 @@ class VieedEditor(App):
         selected_word = str(event.option.prompt)
 
         cursor = editor.cursor_location
-        lines = editor.text.splitlines()
+        lines = editor.text.split("\n")
         current_line = lines[cursor[0]][:cursor[1]] if cursor[0] < len(lines) else ""
         words_in_line = re.findall(r"\b\w+\b", current_line)
         prefix = words_in_line[-1] if words_in_line else ""
@@ -517,7 +518,7 @@ class VieedEditor(App):
         self._chat_log.append(f"**Vieed AI (Bug Analysis):**\n{response_text}")
         chat_box.update("\n\n---\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
-        self.set_status("✨ AI Analysis complete.")
+        self.set_status("✨ AI Analysis complete. Press Ctrl+Shift+A to copy code.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search_bar":
@@ -571,10 +572,10 @@ class VieedEditor(App):
         self._chat_log.append(f"**Vieed AI:**\n{response_text}")
         chat_box.update("\n\n---\n\n".join(self._chat_log))
         chat_scroll.scroll_end(animate=False)
-        self.set_status("Ready")
+        self.set_status("Ready. Press Ctrl+Shift+A to copy AI code.")
 
     def action_copy_last_ai(self) -> None:
-        """Copy the last AI answer to the clipboard — code blocks only, if present."""
+        """Copy the last AI code block or answer directly to clipboard."""
         entry = next((e for e in reversed(self._chat_log) if e.startswith("**Vieed AI")), None)
         if not entry:
             self.set_status("⚠️ No AI answer to copy yet.")
@@ -587,16 +588,8 @@ class VieedEditor(App):
         else:
             text = text.replace("**", "")
 
-        try:
-            import pyperclip  # preferred: real OS clipboard
-            pyperclip.copy(text)
-        except ImportError:
-            self.copy_to_clipboard(text)  # fallback: OSC52 terminal clipboard
-        self.set_status("📋 AI answer copied to clipboard.")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_copy_ai":
-            self.action_copy_last_ai()
+        self._set_clipboard(text)
+        self.set_status("📋 AI code copied to clipboard!")
 
     async def _query_ollama_async(self, prompt: str, callback=None) -> None:
         """Fully asynchronous Ollama request to prevent freezing the TUI event loop."""
